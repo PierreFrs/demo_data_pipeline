@@ -1,0 +1,126 @@
+services:
+  redpanda:
+    image: redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --overprovisioned
+      - --memory=512M
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092,OUTSIDE://localhost:19092
+      - --set
+      - redpanda.auto_create_topics_enabled=true
+    ports:
+      - "9092:9092"
+      - "19092:19092"
+      - "9644:9644"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info --brokers localhost:9092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  redpanda-console:
+    image: redpandadata/console:latest
+    environment:
+      - KAFKA_BROKERS=redpanda:9092
+    ports:
+      - "8085:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=analytics
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./3-postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d analytics"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  spark:
+    image: bitnami/spark:3.5
+    environment:
+      - SPARK_MODE=master
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+
+  spark-worker:
+    image: bitnami/spark:3.5
+    depends_on:
+      - spark
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark:7077
+    ports:
+      - "8081:8081"
+
+  spark-streaming:
+    image: bitnami/spark:3.5
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      spark:
+        condition: service_started
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=redpanda:9092
+      - TOPIC=orders
+      - JDBC_URL=jdbc:postgresql://postgres:5432/analytics
+      - PGUSER=postgres
+      - PGPASSWORD=postgres
+    volumes:
+      - ./2-spark:/opt/app:ro
+    command:
+      ["/opt/bitnami/spark/bin/spark-submit",
+       "--master","spark://spark:7077",
+       "--deploy-mode","client",
+       "--conf","spark.ui.port=4041",
+       "--packages","org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,org.postgresql:postgresql:42.7.3",
+       "/opt/app/jobs/streaming_to_postgres.py"]
+
+  generator:
+    build:
+      context: ./1-generator
+      dockerfile: Dockerfile
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=redpanda:9092
+      - TOPIC=orders
+      - RATE_PER_SEC=5
+    depends_on:
+      redpanda:
+        condition: service_healthy
+
+  node:
+    build:
+      context: ./4-node-app
+      dockerfile: Dockerfile
+    environment:
+      # ton app Node accepte soit DATABASE_URL, soit ces variables individuelles
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=analytics
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pg_data:
