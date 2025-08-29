@@ -44,7 +44,7 @@ services:
       - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
-      - ./3-postgres/init:/docker-entrypoint-initdb.d:ro
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d analytics"]
       interval: 5s
@@ -85,7 +85,7 @@ services:
       - PGUSER=postgres
       - PGPASSWORD=postgres
     volumes:
-      - ./2-spark:/opt/app:ro
+      - ./spark-app:/opt/app:ro
     command:
       ["/opt/bitnami/spark/bin/spark-submit",
        "--master","spark://spark:7077",
@@ -96,7 +96,7 @@ services:
 
   generator:
     build:
-      context: ./1-generator
+      context: ./generator
       dockerfile: Dockerfile
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=redpanda:9092
@@ -108,7 +108,7 @@ services:
 
   node:
     build:
-      context: ./4-node-app
+      context: ./node-app
       dockerfile: Dockerfile
     environment:
       # ton app Node accepte soit DATABASE_URL, soit ces variables individuelles
